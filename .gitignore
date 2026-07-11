@@ -29,3 +29,5 @@ Thumbs.db
 # Ignore uploaded files
 backend/app/uploads/*
 !backend/app/uploads/.gitkeep
+
+Backup ADP team.zip

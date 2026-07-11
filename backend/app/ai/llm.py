@@ -1,60 +1,139 @@
 import os
 import json
-from google import genai
-from google.genai import types
+import urllib.request
+import urllib.error
+from pathlib import Path
+
+
+def load_env_file():
+    env_path = Path(__file__).resolve().parents[2] / ".env"
+
+    if not env_path.exists():
+        return
+
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+
+        os.environ[key] = value
+
+
+load_env_file()
+
 
 class GeminiEngine:
     def __init__(self):
-        # Read the free Gemini key from your .env file
-        api_key = os.getenv("GEMINI_API_KEY", "")
-        self.client = genai.Client(api_key=api_key) if api_key else None
+        self.api_key = os.getenv("GEMINI_API_KEY")
 
-    def route_intent_and_explain(self, user_query: str, dataset_metadata: dict, health_report: dict, trained_metrics: dict = None) -> dict:
-        """
-        Uses the free Gemini 2.5 Flash model to analyze intent and output structured JSON.
-        """
-        if not self.client:
+        print("GEMINI KEY PREFIX:", self.api_key[:6] if self.api_key else "NO KEY")
+        print("GEMINI KEY LENGTH:", len(self.api_key) if self.api_key else 0)
+
+    def route_intent_and_explain(
+        self,
+        user_query: str,
+        dataset_metadata: dict,
+        health_report: dict,
+        trained_metrics: dict = None,
+    ) -> dict:
+        if not self.api_key:
             return {
                 "intent": "regression",
                 "target_column": dataset_metadata.get("column_names", [""])[-1],
-                "explanation": "Gemini API token missing or unconfigured. Running fallback metrics."
+                "explanation": "Gemini API key missing. Please add GEMINI_API_KEY in backend/.env file.",
             }
 
         system_instruction = """
-        You are an advanced expert Automated AI Data Architect. Your goal is to inspect a user's natural text request, study their raw dataset summary structures, and reply with a clean JSON output containing exactly three items:
-        1. 'intent': Must be exactly one of ['regression', 'classification', 'clustering', 'forecasting']
-        2. 'target_column': The column name that matches what they want to predict or analyze. If clustering, leave empty.
-        3. 'explanation': A short, markdown-supported 3-sentence summary highlighting dataset traits, historical patterns, and performance metrics.
+        You are an advanced expert Automated AI Data Architect.
+
+        Reply ONLY as valid JSON with exactly these keys:
+        {
+          "intent": "regression | classification | clustering | forecasting",
+          "target_column": "column name or empty string",
+          "explanation": "short explanation"
+        }
+
+        Rules:
+        - intent must be one of: regression, classification, clustering, forecasting
+        - If the user asks to predict a numeric value, use regression
+        - If the user asks to classify categories like yes/no, pass/fail, placement, churn, use classification
+        - If the user asks to group records, use clustering
+        - If the user asks future trend over time, use forecasting
+        - If clustering, target_column must be empty
         """
 
         prompt = f"""
-        User Request: "{user_query}"
-        
+        User Request:
+        {user_query}
+
         Dataset Structure:
-        - Columns: {dataset_metadata.get('column_names')}
-        - Continuous Numeric features: {dataset_metadata.get('types', {}).get('numeric')}
-        - Categorical features: {dataset_metadata.get('types', {}).get('categorical')}
-        - Discovered Missing values: {health_report.get('missing_values')}
-        
-        Previously Computed Pipeline Metrics (if any):
-        {json.dumps(trained_metrics) if trained_metrics else 'None computed yet.'}
+        Columns: {dataset_metadata.get("column_names")}
+        Numeric features: {dataset_metadata.get("types", {}).get("numeric")}
+        Categorical features: {dataset_metadata.get("types", {}).get("categorical")}
+        Missing values: {health_report.get("missing_values")}
+
+        Previously Computed Pipeline Metrics:
+        {json.dumps(trained_metrics, default=str) if trained_metrics else "None computed yet."}
         """
 
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+
+        payload = {
+            "systemInstruction": {
+                "parts": [
+                    {"text": system_instruction}
+                ]
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt}
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "responseMimeType": "application/json"
+            }
+        }
+
+        data = json.dumps(payload).encode("utf-8")
+
+        request = urllib.request.Request(
+            url=url,
+            data=data,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": self.api_key,
+            },
+        )
+
         try:
-            # Generate structured content using the free-tier model
-            response = self.client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    response_mime_type="application/json"
-                )
-            )
-            return json.loads(response.text)
-            
+            with urllib.request.urlopen(request, timeout=60) as response:
+                response_body = response.read().decode("utf-8")
+                result = json.loads(response_body)
+
+            text = result["candidates"][0]["content"]["parts"][0]["text"]
+
+            return json.loads(text)
+
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode("utf-8")
+            return {
+                "intent": "regression",
+                "target_column": dataset_metadata.get("column_names", [""])[-1],
+                "explanation": f"Gemini API HTTP error: {e.code} - {error_body}",
+            }
+
         except Exception as e:
             return {
                 "intent": "regression",
                 "target_column": dataset_metadata.get("column_names", [""])[-1],
-                "explanation": f"Structural analytical mapping engine pipeline fallback: {str(e)}"
+                "explanation": f"Structural analytical mapping engine pipeline fallback: {str(e)}",
             }
