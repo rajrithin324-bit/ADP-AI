@@ -117,7 +117,7 @@ function CurrentStatus({ activeFileId, healthReport, chartPayload }) {
     <section className="organized-panel">
       <div className="panel-title-row">
         <div>
-          <h1>Your Current Status</h1>
+          <h1>Your Status</h1>
           <p>Track what ADP AI is doing with your uploaded dataset.</p>
         </div>
 
